@@ -5,4 +5,4 @@
 ### 🚀 一键安装命令（支持 curl / wget 自动兼容）
 
 ```bash
-bash <(curl -fsSL [https://raw.githubusercontent.com/dcy-yy/my-singbox/main/sb.sh](https://raw.githubusercontent.com/dcy-yy/my-singbox/main/sb.sh) || wget -qO- [https://raw.githubusercontent.com/dcy-yy/my-singbox/main/sb.sh](https://raw.githubusercontent.com/dcy-yy/my-singbox/main/sb.sh))
+bash <(curl -fsSL https://raw.githubusercontent.com/lyonleo/my-singbox/main/sb.sh || wget -qO- https://raw.githubusercontent.com/lyonleo/my-singbox/main/sb.sh)
