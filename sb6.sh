@@ -2,7 +2,7 @@ cat <<'EOF' > /usr/local/bin/singbox-menu
 #!/usr/bin/env bash
 
 # =========================================================
-# Sing-box IPv6-Only 专用聚合管理脚本 (Reality+Hy2+TUIC)
+# Sing-box IPv6-Only 专用聚合管理脚本 (Reality + Hy2 + TUIC)
 # =========================================================
 
 RED="\033[31m"
@@ -25,7 +25,7 @@ check_root() {
 }
 
 setup_nat64() {
-    echo -e "${GREEN}>>> 正在检查并配置 NAT64 / DNS64 (确保纯 IPv6 可访问纯 IPv4 资源)...${PLAIN}"
+    echo -e "${GREEN}>>> 正在检查并配置 NAT64 / DNS64 (确保纯 IPv6 机器畅通访问 GitHub 与 IPv4 资源)...${PLAIN}"
     if ! curl -s --connect-timeout 3 https://api.ipify.org >/dev/null 2>&1; then
         chattr -i /etc/resolv.conf 2>/dev/null
         cat > /etc/resolv.conf << 'DNS_EOF'
@@ -46,7 +46,7 @@ get_server_ip() {
     fi
 
     if [[ -z "$SERVER_IP" ]]; then
-        echo -e "${RED}错误：未能检测到可用的公网 IPv6 地址！${PLAIN}"
+        echo -e "${RED}错误：未能检测到可用的公网 IPv6 地址，请检查机器网络！${PLAIN}"
         exit 1
     fi
 }
@@ -203,7 +203,7 @@ install_singbox() {
     check_root
     setup_nat64
 
-    echo -e "${GREEN}>>> 正在安装基础依赖与环境...${PLAIN}"
+    echo -e "${GREEN}>>> 正在安装基础依赖与工具...${PLAIN}"
     apt update -y && apt install -y curl wget tar jq openssl python3 ufw
 
     optimize_bbr
@@ -224,7 +224,6 @@ install_singbox() {
     NODE_NAME="Singbox-v6"
     DEST_DOMAIN="www.apple.com"
 
-    # 生成 Reality 密钥对
     KEYPAIR=$(sing-box generate reality-keypair)
     PRIVATE_KEY=$(echo "${KEYPAIR}" | grep -i "PrivateKey" | awk -F ':' '{print $2}' | tr -d ' \r\n')
     PUBLIC_KEY=$(echo "${KEYPAIR}" | grep -i "PublicKey" | awk -F ':' '{print $2}' | tr -d ' \r\n')
