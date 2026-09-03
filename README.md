@@ -6,3 +6,4 @@
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/lyonleo/my-singbox/main/sb.sh || wget -qO- https://raw.githubusercontent.com/lyonleo/my-singbox/main/sb.sh)
+bash <(curl -fsSL [https://raw.githubusercontent.com/lyonleo/my-singbox/main/sb6.sh](https://raw.githubusercontent.com/lyonleo/my-singbox/main/sb6.sh) || wget -qO- [https://raw.githubusercontent.com/lyonleo/my-singbox/main/sb6.sh](https://raw.githubusercontent.com/lyonleo/my-singbox/main/sb6.sh))
