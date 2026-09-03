@@ -2,7 +2,7 @@ cat <<'EOF' > /usr/local/bin/singbox-menu
 #!/usr/bin/env bash
 
 # =========================================================
-# Sing-box 三合一 (Reality + Hy2 + TUIC) & Clash 订阅管理
+# Sing-box 三合一聚合管理脚本 (支持 NAT 小鸡端口自定义)
 # =========================================================
 
 RED="\033[31m"
@@ -25,11 +25,22 @@ check_root() {
 }
 
 get_server_ip() {
-    SERVER_IP=$(curl -4 -s --connect-timeout 5 https://api.ipify.org || curl -4 -s --connect-timeout 5 https://ifconfig.me || curl -4 -s --connect-timeout 5 https://icanhazip.com)
+    SERVER_IP=$(curl -4 -s --connect-timeout 5 https://api.ipify.org || \
+                curl -4 -s --connect-timeout 5 https://ifconfig.me || \
+                curl -4 -s --connect-timeout 5 https://icanhazip.com | tr -d ' \r\n')
+
+    if [[ -z "$SERVER_IP" ]]; then
+        SERVER_IP=$(ip -4 addr show scope global | grep inet | awk '{print $2}' | cut -d'/' -f1 | head -n 1 | tr -d ' \r\n')
+    fi
+
+    if [[ -z "$SERVER_IP" ]]; then
+        echo -e "${RED}错误：未能检测到可用的公网 IPv4 地址！${PLAIN}"
+        exit 1
+    fi
 }
 
 optimize_bbr() {
-    echo -e "${GREEN}>>> 正在优化系统网络与 BBR / UDP 缓冲区参数...${PLAIN}"
+    echo -e "${GREEN}>>> 正在优化系统网络与 BBR 参数...${PLAIN}"
     sed -i '/net.core.default_qdisc/d' /etc/sysctl.conf
     sed -i '/net.ipv4.tcp_congestion_control/d' /etc/sysctl.conf
     sed -i '/net.ipv4.tcp_fastopen/d' /etc/sysctl.conf
@@ -87,7 +98,7 @@ unified-delay: true
 proxies:
   - name: "${name_reality}"
     type: vless
-    server: ${ip}
+    server: "${ip}"
     port: ${reality_port}
     uuid: ${uuid}
     network: tcp
@@ -102,7 +113,7 @@ proxies:
 
   - name: "${name_hy2}"
     type: hysteria2
-    server: ${ip}
+    server: "${ip}"
     port: ${hy2_port}
     password: "${password}"
     sni: bing.com
@@ -111,7 +122,7 @@ proxies:
 
   - name: "${name_tuic}"
     type: tuic
-    server: ${ip}
+    server: "${ip}"
     port: ${tuic_port}
     uuid: ${uuid}
     password: "${password}"
@@ -161,7 +172,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=${SUB_DIR}
-ExecStart=/usr/bin/python3 -m http.server ${sub_port}
+ExecStart=/usr/bin/python3 -m http.server ${sub_port} --bind 0.0.0.0
 Restart=always
 RestartSec=3
 
@@ -174,30 +185,64 @@ SERVICE_EOF
     systemctl enable singbox-sub > /dev/null 2>&1
 }
 
+validate_port() {
+    local port=$1
+    if [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
 install_singbox() {
     check_root
-    echo -e "${GREEN}>>> 正在安装基础依赖与环境...${PLAIN}"
+
+    echo -e "${GREEN}>>> 正在安装基础依赖与工具...${PLAIN}"
     apt update -y && apt install -y curl wget tar jq openssl python3 ufw
 
     optimize_bbr
     generate_cert
 
-    echo -e "${GREEN}>>> 正在拉取 Sing-box 官方最新二进制核心...${PLAIN}"
+    echo -e "${GREEN}>>> 正在拉取 Sing-box 官方最新核心...${PLAIN}"
     curl -fsSL https://sing-box.app/install.sh | sh || true
 
     get_server_ip
 
     UUID=$(sing-box generate uuid)
     PASSWORD=$(openssl rand -hex 10)
-    REALITY_PORT=$((RANDOM % 5000 + 40000))
-    HY2_PORT=$((RANDOM % 5000 + 45001))
-    TUIC_PORT=$((RANDOM % 5000 + 50001))
-    SUB_PORT=$((RANDOM % 5000 + 20000))
     SUB_TOKEN=$(openssl rand -hex 8)
-    NODE_NAME="Singbox-${SERVER_IP}"
+    NODE_NAME="Singbox-Node"
     DEST_DOMAIN="www.apple.com"
 
-    # 生成 Reality 密钥对
+    echo -e "\n${CYAN}================ 端口配置选项 (适合普通/NAT VPS) ================${PLAIN}"
+    echo -e "1. ${GREEN}系统随机生成高位端口${PLAIN} (常规独立 IP 机器推荐，直接回车默认)"
+    echo -e "2. ${YELLOW}手动自定义指定端口${PLAIN} (NAT 小鸡 / 只有特定端口可用推荐)"
+    read -rp "请选择配置方式 [1/2, 默认 1]: " PORT_CHOICE
+
+    if [[ "$PORT_CHOICE" == "2" ]]; then
+        while true; do
+            read -rp "请输入 Reality 监听端口 (TCP，例如 10001): " REALITY_PORT
+            validate_port "$REALITY_PORT" && break || echo -e "${RED}无效端口，请输入 1-65535 之间的数字！${PLAIN}"
+        done
+        while true; do
+            read -rp "请输入 Hysteria 2 监听端口 (UDP，例如 10002): " HY2_PORT
+            validate_port "$HY2_PORT" && break || echo -e "${RED}无效端口，请输入 1-65535 之间的数字！${PLAIN}"
+        done
+        while true; do
+            read -rp "请输入 TUIC V5 监听端口 (UDP，例如 10003): " TUIC_PORT
+            validate_port "$TUIC_PORT" && break || echo -e "${RED}无效端口，请输入 1-65535 之间的数字！${PLAIN}"
+        done
+        while true; do
+            read -rp "请输入 Clash 订阅下载服务端口 (TCP，例如 10004): " SUB_PORT
+            validate_port "$SUB_PORT" && break || echo -e "${RED}无效端口，请输入 1-65535 之间的数字！${PLAIN}"
+        done
+    else
+        REALITY_PORT=$((RANDOM % 5000 + 40000))
+        HY2_PORT=$((RANDOM % 5000 + 45001))
+        TUIC_PORT=$((RANDOM % 5000 + 50001))
+        SUB_PORT=$((RANDOM % 5000 + 20000))
+    fi
+
     KEYPAIR=$(sing-box generate reality-keypair)
     PRIVATE_KEY=$(echo "${KEYPAIR}" | grep -i "PrivateKey" | awk -F ':' '{print $2}' | tr -d ' \r\n')
     PUBLIC_KEY=$(echo "${KEYPAIR}" | grep -i "PublicKey" | awk -F ':' '{print $2}' | tr -d ' \r\n')
@@ -313,6 +358,55 @@ INFO_EOF
     view_config
 }
 
+modify_ports() {
+    if [[ ! -f ${CONFIG_FILE} || ! -f ${SUB_INFO_FILE} ]]; then
+        echo -e "${RED}未检测到安装记录，请先安装！${PLAIN}"
+        return
+    fi
+
+    source ${SUB_INFO_FILE}
+    get_server_ip
+
+    echo -e "\n${CYAN}================ 修改各协议监听端口 ================${PLAIN}"
+    echo -e "当前端口 -> Reality(TCP): ${YELLOW}${REALITY_PORT}${PLAIN} | Hy2(UDP): ${YELLOW}${HY2_PORT}${PLAIN} | TUIC(UDP): ${YELLOW}${TUIC_PORT}${PLAIN} | 订阅(TCP): ${YELLOW}${SUB_PORT}${PLAIN}"
+    echo -e "(直接回车表示保持原端口不变)"
+    
+    read -rp "请输入新 Reality 端口 [当前: ${REALITY_PORT}]: " NEW_REALITY
+    [[ -n "$NEW_REALITY" ]] && validate_port "$NEW_REALITY" && REALITY_PORT=$NEW_REALITY
+
+    read -rp "请输入新 Hysteria 2 端口 [当前: ${HY2_PORT}]: " NEW_HY2
+    [[ -n "$NEW_HY2" ]] && validate_port "$NEW_HY2" && HY2_PORT=$NEW_HY2
+
+    read -rp "请输入新 TUIC V5 端口 [当前: ${TUIC_PORT}]: " NEW_TUIC
+    [[ -n "$NEW_TUIC" ]] && validate_port "$NEW_TUIC" && TUIC_PORT=$NEW_TUIC
+
+    read -rp "请输入新 Clash 订阅端口 [当前: ${SUB_PORT}]: " NEW_SUB
+    [[ -n "$NEW_SUB" ]] && validate_port "$NEW_SUB" && SUB_PORT=$NEW_SUB
+
+    jq ".inbounds[0].listen_port = ${REALITY_PORT} | .inbounds[1].listen_port = ${HY2_PORT} | .inbounds[2].listen_port = ${TUIC_PORT}" ${CONFIG_FILE} > ${CONFIG_FILE}.tmp && mv ${CONFIG_FILE}.tmp ${CONFIG_FILE}
+
+    sed -i "s/REALITY_PORT=.*/REALITY_PORT=${REALITY_PORT}/" ${SUB_INFO_FILE}
+    sed -i "s/HY2_PORT=.*/HY2_PORT=${HY2_PORT}/" ${SUB_INFO_FILE}
+    sed -i "s/TUIC_PORT=.*/TUIC_PORT=${TUIC_PORT}/" ${SUB_INFO_FILE}
+    sed -i "s/SUB_PORT=.*/SUB_PORT=${SUB_PORT}/" ${SUB_INFO_FILE}
+
+    UUID=$(jq -r '.inbounds[0].users[0].uuid' ${CONFIG_FILE})
+    generate_clash_yaml "${SERVER_IP}" "${REALITY_PORT}" "${HY2_PORT}" "${TUIC_PORT}" "${UUID}" "${PASSWORD}" "${PUBLIC_KEY}" "${SHORT_ID}" "${DEST_DOMAIN}" "${SUB_TOKEN}" "${NODE_NAME}"
+    setup_sub_service "${SUB_PORT}"
+
+    systemctl restart sing-box
+
+    if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active"; then
+        ufw allow ${REALITY_PORT}/tcp > /dev/null 2>&1
+        ufw allow ${HY2_PORT}/udp > /dev/null 2>&1
+        ufw allow ${TUIC_PORT}/udp > /dev/null 2>&1
+        ufw allow ${SUB_PORT}/tcp > /dev/null 2>&1
+    fi
+
+    echo -e "${GREEN}>>> 端口已更新并已重启服务！${PLAIN}"
+    view_config
+}
+
 view_config() {
     if [[ ! -f ${CONFIG_FILE} || ! -f ${SUB_INFO_FILE} ]]; then
         echo -e "${RED}未检测到安装记录，请先安装！${PLAIN}"
@@ -321,8 +415,7 @@ view_config() {
 
     get_server_ip
     source ${SUB_INFO_FILE}
-
-    [[ -z "$NODE_NAME" ]] && NODE_NAME="Singbox-${SERVER_IP}"
+    [[ -z "$NODE_NAME" ]] && NODE_NAME="Singbox-Node"
 
     UUID=$(jq -r '.inbounds[0].users[0].uuid' ${CONFIG_FILE})
     SUB_URL="http://${SERVER_IP}:${SUB_PORT}/${SUB_TOKEN}.yaml"
@@ -332,17 +425,17 @@ view_config() {
     REALITY_LINK="vless://${UUID}@${SERVER_IP}:${REALITY_PORT}?type=tcp&security=reality&pbk=${PUBLIC_KEY}&fp=chrome&sni=${DEST_DOMAIN}&sid=${SHORT_ID}&spx=%2F&flow=xtls-rprx-vision#${NODE_NAME}-Reality"
 
     echo -e "\n${GREEN}================ 节点配置详情 ================${PLAIN}"
-    echo -e "${YELLOW}服务器 IP (Address): ${PLAIN} ${SERVER_IP}"
+    echo -e "${YELLOW}服务器 IP 地址:      ${PLAIN} ${SERVER_IP}"
     echo -e "${YELLOW}节点通用前缀名称:    ${PLAIN} ${NODE_NAME}"
     echo -e "${YELLOW}Reality 端口 (TCP):  ${PLAIN} ${REALITY_PORT}"
     echo -e "${YELLOW}Hysteria2 端口 (UDP):${PLAIN} ${HY2_PORT}"
     echo -e "${YELLOW}TUIC V5 端口 (UDP):  ${PLAIN} ${TUIC_PORT}"
     echo -e "${YELLOW}通用 UUID:           ${PLAIN} ${UUID}"
     echo -e "${YELLOW}Hy2/TUIC 认证密码:   ${PLAIN} ${PASSWORD}"
-    echo -e "${YELLOW}订阅服务端口:        ${PLAIN} ${SUB_PORT}"
+    echo -e "${YELLOW}订阅服务端口 (TCP):  ${PLAIN} ${SUB_PORT}"
     echo -e "${YELLOW}订阅文件名称:        ${PLAIN} ${SUB_TOKEN}.yaml"
     echo -e "----------------------------------------------------"
-    echo -e "${GREEN}[🌟 Clash (Mihomo) 在线三合一订阅链接]:${PLAIN}"
+    echo -e "${GREEN}[🌟 Clash (Mihomo) 在线订阅链接]:${PLAIN}"
     echo -e "${CYAN}${SUB_URL}${PLAIN}"
     echo -e "----------------------------------------------------"
     echo -e "${GREEN}[Hysteria 2 单节点链接]:${PLAIN}"
@@ -364,7 +457,7 @@ change_sub_name() {
 
     get_server_ip
     source ${SUB_INFO_FILE}
-    [[ -z "$NODE_NAME" ]] && NODE_NAME="Singbox-${SERVER_IP}"
+    [[ -z "$NODE_NAME" ]] && NODE_NAME="Singbox-Node"
 
     echo -e "\n当前订阅文件名: ${YELLOW}${SUB_TOKEN}.yaml${PLAIN}"
     read -rp "请输入新的订阅名称 (仅限英文/数字/下划线，无需输入.yaml): " NEW_TOKEN
@@ -392,10 +485,10 @@ change_node_name() {
 
     get_server_ip
     source ${SUB_INFO_FILE}
-    [[ -z "$NODE_NAME" ]] && NODE_NAME="Singbox-${SERVER_IP}"
+    [[ -z "$NODE_NAME" ]] && NODE_NAME="Singbox-Node"
 
     echo -e "\n当前节点显示前缀: ${YELLOW}${NODE_NAME}${PLAIN}"
-    read -rp "请输入新的节点显示名称 (如 香港 01 / 日本-高速): " NEW_NODE_NAME
+    read -rp "请输入新的节点显示名称 (如 香港 01 / 日本-专线): " NEW_NODE_NAME
 
     if [[ -z "$NEW_NODE_NAME" ]]; then
         echo -e "${RED}节点名称不能为空！${PLAIN}"
@@ -413,7 +506,7 @@ change_node_name() {
     generate_clash_yaml "${SERVER_IP}" "${REALITY_PORT}" "${HY2_PORT}" "${TUIC_PORT}" "${UUID}" "${PASSWORD}" "${PUBLIC_KEY}" "${SHORT_ID}" "${DEST_DOMAIN}" "${SUB_TOKEN}" "${NEW_NODE_NAME}"
 
     echo -e "${GREEN}节点名称已成功修改为: ${YELLOW}${NEW_NODE_NAME}${PLAIN}"
-    echo -e "${CYAN}提示：已同步更新订阅文件！请在 Clash 客户端点击「更新订阅 / Refresh」即可看到 3 个节点的新名称。${PLAIN}\n"
+    echo -e "${CYAN}提示：已同步更新订阅文件！请在客户端刷新订阅即可。${PLAIN}\n"
 }
 
 restart_services() {
@@ -460,20 +553,21 @@ uninstall_all() {
 show_menu() {
     clear
     echo -e "${CYAN}======================================================${PLAIN}"
-    echo -e "${GREEN} Sing-box 三合一 (Reality+Hy2+TUIC) & Clash 管理脚本  ${PLAIN}"
+    echo -e "${GREEN}   Sing-box 聚合管理脚本 (Reality+Hy2+TUIC+Clash订阅)   ${PLAIN}"
     echo -e "${CYAN}======================================================${PLAIN}"
-    echo -e "${GREEN} 1.${PLAIN} 安装 / 重新安装 三合一协议节点 与 Clash 在线订阅"
-    echo -e "${GREEN} 2.${PLAIN} 查看当前所有节点配置与 Clash 在线订阅链接"
-    echo -e "${GREEN} 3.${PLAIN} 修改节点显示前缀名称 (如: 🇭🇰 香港 01)"
-    echo -e "${GREEN} 4.${PLAIN} 修改 Clash 订阅文件名称"
-    echo -e "${GREEN} 5.${PLAIN} 重启所有服务 (Sing-box + 订阅服务)"
-    echo -e "${GREEN} 6.${PLAIN} 停止所有服务"
-    echo -e "${GREEN} 7.${PLAIN} 彻底卸载清理所有配置与服务"
+    echo -e "${GREEN} 1.${PLAIN} 安装 / 重新安装节点服务 (支持自定义/随机端口)"
+    echo -e "${GREEN} 2.${PLAIN} 查看当前节点配置与 Clash 在线订阅链接"
+    echo -e "${GREEN} 3.${PLAIN} 单独修改节点监听端口 (适合 NAT 端口调整)"
+    echo -e "${GREEN} 4.${PLAIN} 修改节点显示前缀名称 (如: 🇭🇰 香港 01)"
+    echo -e "${GREEN} 5.${PLAIN} 修改 Clash 订阅文件名称"
+    echo -e "${GREEN} 6.${PLAIN} 重启所有服务"
+    echo -e "${GREEN} 7.${PLAIN} 停止所有服务"
+    echo -e "${GREEN} 8.${PLAIN} 彻底卸载清理"
     echo -e "${GREEN} 0.${PLAIN} 退出菜单"
     echo -e "${CYAN}======================================================${PLAIN}"
-    
+
     if systemctl is-active --quiet sing-box; then
-        echo -e "Sing-box 状态: ${GREEN}运行中 (Reality + Hy2 + TUIC 监听中)${PLAIN}"
+        echo -e "Sing-box 状态: ${GREEN}运行中${PLAIN}"
     else
         echo -e "Sing-box 状态: ${RED}未运行 / 未安装${PLAIN}"
     fi
@@ -485,15 +579,16 @@ show_menu() {
     fi
     echo -e "${CYAN}======================================================${PLAIN}"
 
-    read -rp "请输入操作编号 [0-7]: " num
+    read -rp "请输入操作编号 [0-8]: " num
     case "$num" in
         1) install_singbox ;;
         2) view_config ;;
-        3) change_node_name ;;
-        4) change_sub_name ;;
-        5) restart_services ;;
-        6) stop_services ;;
-        7) uninstall_all ;;
+        3) modify_ports ;;
+        4) change_node_name ;;
+        5) change_sub_name ;;
+        6) restart_services ;;
+        7) stop_services ;;
+        8) uninstall_all ;;
         0) exit 0 ;;
         *) echo -e "${RED}请输入有效编号！${PLAIN}" ;;
     esac
