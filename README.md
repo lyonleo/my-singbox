@@ -6,6 +6,7 @@
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/lyonleo/my-singbox/main/sb.sh || wget -qO- https://raw.githubusercontent.com/lyonleo/my-singbox/main/sb.sh)
+
 ### 🌐 纯 IPv6 专用一键安装命令
 
 适合纯 IPv6（IPv6-Only）机器，或希望强制走 IPv6 的 VPS：
