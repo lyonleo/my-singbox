@@ -7,7 +7,7 @@
 ## 通用双栈 / IPv4 优先安装命令
 
 ```bash
-apt-get update && apt-get install -y curl ca-certificates && curl -fsSL https://raw.githubusercontent.com/lyonleo/my-singbox/main/singbox-menu-v2.sh -o /root/singbox-menu-v2.sh && bash -n /root/singbox-menu-v2.sh && bash /root/singbox-menu-v2.sh
+apt-get update && apt-get install -y curl ca-certificates && curl -fsSL https://raw.githubusercontent.com/lyonleo/my-singbox/main/sb.sh -o /root/sb.sh && bash -n /root/sb.sh && bash /root/sb.sh
 ```
 
 ## 纯 IPv6 专用安装命令
