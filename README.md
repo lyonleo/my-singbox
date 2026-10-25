@@ -7,7 +7,7 @@
 ### 🚀 通用双栈 / IPv4 优先安装命令
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/lyonleo/my-singbox/main/sb.sh || wget -qO- https://raw.githubusercontent.com/lyonleo/my-singbox/main/sb.sh)
+curl -fsSL https://raw.githubusercontent.com/用户名/仓库名/main/singbox-menu-v2.sh -o /root/singbox-menu-v2.sh && bash /root/singbox-menu-v2.sh
 ```
 
 ---
