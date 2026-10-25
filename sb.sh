@@ -1,128 +1,136 @@
-    local dest="/root/sing-box-backup-$(date +%Y%m%d-%H%M%S)"
-    mkdir -p "$dest"
-    [[ ! -e $BASE ]] || cp -a "$BASE" "$dest/"
-    [[ ! -e /etc/systemd/system/$SERVICE ]] || cp -a "/etc/systemd/system/$SERVICE" "$dest/"
-    msg "旧配置备份：$dest"
-  fi
+#!/usr/bin/env bash
+# Sing-box Reality + Hysteria2 + TUIC + Mihomo subscription manager
+set -o pipefail
+RED='\033[31m'; GREEN='\033[32m'; YELLOW='\033[33m'; CYAN='\033[36m'; RESET='\033[0m'
+DIR=/etc/sing-box
+CONF=$DIR/config.json
+CERT=$DIR/cert
+WEB=/var/www/singbox-sub
+INFO=/etc/singbox_sub_info.conf
+UNIT=/etc/systemd/system/singbox-sub.service
+SELF=/usr/local/bin/singbox-menu
+say(){ printf '%b\n' "$*"; }
+err(){ say "${RED}错误: $*${RESET}" >&2; }
+need_root(){ (( EUID == 0 )) || { err '请使用 root 运行'; exit 1; }; }
+need(){ command -v "$1" >/dev/null 2>&1 || { err "缺少命令: $1"; return 1; }; }
+valid_port(){ [[ $1 =~ ^[0-9]+$ ]] && (( 10#$1 >= 1 && 10#$1 <= 65535 )); }
+ask_port(){ local result_var=$1 label=$2 current=$3 input; while :; do read -r -p "$label [$current]: " input; input=${input:-$current}; if valid_port "$input"; then printf -v "$result_var" '%s' "$input"; return; fi; err '端口必须为 1-65535'; done; }
+ports_unique(){ local a=$1 b=$2 c=$3 d=$4; [[ $a != "$b" && $a != "$c" && $a != "$d" && $b != "$c" && $b != "$d" && $c != "$d" ]]; }
+server_ip(){ SERVER_IP=$(curl -4fsS --connect-timeout 5 --max-time 10 https://api.ipify.org 2>/dev/null || true); [[ $SERVER_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || { err '无法获取公网 IPv4，请检查网络'; return 1; }; }
+load(){ [[ -s $CONF && -s $INFO ]] || { err '未找到完整安装记录，请先安装'; return 1; }; source "$INFO"; need jq || return 1; UUID=$(jq -er '.inbounds[] | select(.type=="vless") | .users[0].uuid' "$CONF") || return 1; }
+backup(){ local stamp; stamp=$(date +%Y%m%d-%H%M%S); mkdir -p /root/singbox-backups; tar -czf "/root/singbox-backups/backup-${stamp}.tar.gz" -C / etc/sing-box etc/singbox_sub_info.conf var/www/singbox-sub 2>/dev/null || true; say "备份目录: /root/singbox-backups/"; }
+install_deps(){ need apt-get || { err '目前仅支持 Debian/Ubuntu'; return 1; }; apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl ca-certificates openssl jq python3 tar; }
+install_core(){ if command -v sing-box >/dev/null 2>&1; then say '检测到现有 Sing-box 核心'; return 0; fi; local temp; temp=$(mktemp); curl -fsSL --retry 2 https://sing-box.app/install.sh -o "$temp" || { rm -f "$temp"; return 1; }; bash "$temp"; local rc=$?; rm -f "$temp"; (( rc == 0 )) && need sing-box; }
+make_cert(){ mkdir -p "$CERT"; if [[ ! -s $CERT/cert.pem || ! -s $CERT/private.key ]]; then openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout "$CERT/private.key" -out "$CERT/cert.pem" -days 3650 -subj '/CN=bing.com' >/dev/null 2>&1 || return 1; chmod 600 "$CERT/private.key"; fi; }
+make_yaml(){ mkdir -p "$WEB"; chmod 700 "$WEB"; local temp="$WEB/.${SUB_TOKEN}.yaml.tmp"; cat > "$temp" <<EOF
+mixed-port: 7890
+allow-lan: false
+mode: rule
+log-level: warning
+proxies:
+  - name: "${NODE_NAME}-Reality"
+    type: vless
+    server: ${SERVER_IP}
+    port: ${REALITY_PUBLIC_PORT}
+    uuid: ${UUID}
+    network: tcp
+    tls: true
+    udp: true
+    flow: xtls-rprx-vision
+    servername: ${DEST_DOMAIN}
+    reality-opts:
+      public-key: ${PUBLIC_KEY}
+      short-id: ${SHORT_ID}
+    client-fingerprint: chrome
+  - name: "${NODE_NAME}-Hy2"
+    type: hysteria2
+    server: ${SERVER_IP}
+    port: ${HY2_PUBLIC_PORT}
+    password: "${PASSWORD}"
+    sni: bing.com
+    skip-cert-verify: true
+  - name: "${NODE_NAME}-TUIC"
+    type: tuic
+    server: ${SERVER_IP}
+    port: ${TUIC_PUBLIC_PORT}
+    uuid: ${UUID}
+    password: "${PASSWORD}"
+    sni: bing.com
+    alpn: [h3]
+    skip-cert-verify: true
+    congestion-controller: cubic
+    udp-relay-mode: native
+proxy-groups:
+  - name: PROXIES
+    type: select
+    proxies: [AUTO, "${NODE_NAME}-Reality", "${NODE_NAME}-Hy2", "${NODE_NAME}-TUIC", DIRECT]
+  - name: AUTO
+    type: url-test
+    url: http://www.gstatic.com/generate_204
+    interval: 300
+    proxies: ["${NODE_NAME}-Reality", "${NODE_NAME}-Hy2", "${NODE_NAME}-TUIC"]
+rules:
+  - GEOIP,LAN,DIRECT
+  - GEOIP,CN,DIRECT
+  - MATCH,PROXIES
+EOF
+ mv -f "$temp" "$WEB/${SUB_TOKEN}.yaml"; chmod 600 "$WEB/${SUB_TOKEN}.yaml"; }
+write_info(){ cat > "$INFO" <<EOF
+SUB_PORT=$SUB_PORT
+SUB_PUBLIC_PORT=$SUB_PUBLIC_PORT
+SUB_TOKEN=$SUB_TOKEN
+NODE_NAME=$(printf '%q' "$NODE_NAME")
+REALITY_PORT=$REALITY_PORT
+HY2_PORT=$HY2_PORT
+TUIC_PORT=$TUIC_PORT
+REALITY_PUBLIC_PORT=$REALITY_PUBLIC_PORT
+HY2_PUBLIC_PORT=$HY2_PUBLIC_PORT
+TUIC_PUBLIC_PORT=$TUIC_PUBLIC_PORT
+PASSWORD=$PASSWORD
+PUBLIC_KEY=$PUBLIC_KEY
+SHORT_ID=$SHORT_ID
+DEST_DOMAIN=$DEST_DOMAIN
+EOF
+chmod 600 "$INFO"; }
+write_config(){ mkdir -p "$DIR"; local tmp="$CONF.tmp"; cat > "$tmp" <<EOF
+{
+ "log":{"level":"warn"},
+ "inbounds":[
+  {"type":"vless","tag":"vless-in","listen":"::","listen_port":${REALITY_PORT},"users":[{"uuid":"${UUID}","flow":"xtls-rprx-vision"}],"tls":{"enabled":true,"server_name":"${DEST_DOMAIN}","reality":{"enabled":true,"handshake":{"server":"${DEST_DOMAIN}","server_port":443},"private_key":"${PRIVATE_KEY}","short_id":["${SHORT_ID}"]}}},
+  {"type":"hysteria2","tag":"hy2-in","listen":"::","listen_port":${HY2_PORT},"users":[{"password":"${PASSWORD}"}],"tls":{"enabled":true,"alpn":["h3"],"certificate_path":"${CERT}/cert.pem","key_path":"${CERT}/private.key"}},
+  {"type":"tuic","tag":"tuic-in","listen":"::","listen_port":${TUIC_PORT},"users":[{"uuid":"${UUID}","password":"${PASSWORD}"}],"congestion_control":"cubic","tls":{"enabled":true,"alpn":["h3"],"certificate_path":"${CERT}/cert.pem","key_path":"${CERT}/private.key"}}
+ ],
+ "outbounds":[{"type":"direct","tag":"direct"}]
 }
-load(){ [[ -f $STATE && -f $CFG ]] || { err '未发现本脚本的完整安装记录'; return 1; }; source "$STATE"; }
-write_state(){
-  # 用 printf %q 转义变量，防止 source 时执行特殊字符
-  { local key; for key in SERVER_IP REALITY_PORT HY2_PORT TUIC_PORT SUB_PORT UUID PASSWORD PRIVATE_KEY PUBLIC_KEY SHORT_ID SUB_TOKEN NODE_NAME DEST_DOMAIN; do printf '%s=%q\n' "$key" "${!key}"; done; } > "$STATE"
-  chmod 600 "$STATE"
-}
-write_config(){
-  mkdir -p "$BASE" "$CERT" "$SUB"
-  jq -n --arg uuid "$UUID" --arg pw "$PASSWORD" --arg pk "$PRIVATE_KEY" --arg sid "$SHORT_ID" --arg dest "$DEST_DOMAIN" --arg cert "$CERT/cert.pem" --arg key "$CERT/private.key" --argjson rp "$REALITY_PORT" --argjson hp "$HY2_PORT" --argjson tp "$TUIC_PORT" '{log:{level:"warn"},inbounds:[{type:"vless",tag:"reality",listen:"::",listen_port:$rp,users:[{uuid:$uuid,flow:"xtls-rprx-vision"}],tls:{enabled:true,server_name:$dest,reality:{enabled:true,handshake:{server:$dest,server_port:443},private_key:$pk,short_id:[$sid]}}},{type:"hysteria2",tag:"hy2",listen:"::",listen_port:$hp,users:[{password:$pw}],tls:{enabled:true,alpn:["h3"],certificate_path:$cert,key_path:$key}},{type:"tuic",tag:"tuic",listen:"::",listen_port:$tp,users:[{uuid:$uuid,password:$pw}],congestion_control:"cubic",tls:{enabled:true,alpn:["h3"],certificate_path:$cert,key_path:$key}}],outbounds:[{type:"direct",tag:"direct"}]}' > "$CFG.new"
-  sing-box check -c "$CFG.new" || { rm -f "$CFG.new"; fail '核心配置校验失败，原配置未覆盖'; }
-  mv -f "$CFG.new" "$CFG"
-  chmod 600 "$CFG"
-}
-write_sub(){
-  local file="$SUB/$SUB_TOKEN.yaml"
-  jq -n --arg ip "$SERVER_IP" --arg uuid "$UUID" --arg pw "$PASSWORD" --arg pub "$PUBLIC_KEY" --arg sid "$SHORT_ID" --arg dest "$DEST_DOMAIN" --arg name "$NODE_NAME" --argjson rp "$REALITY_PORT" --argjson hp "$HY2_PORT" --argjson tp "$TUIC_PORT" '{"mixed-port":7890,"allow-lan":false,mode:"rule",proxies:[{name:($name+"-Reality"),type:"vless",server:$ip,port:$rp,uuid:$uuid,network:"tcp",tls:true,flow:"xtls-rprx-vision",servername:$dest,"reality-opts":{"public-key":$pub,"short-id":$sid},"client-fingerprint":"chrome"},{name:($name+"-Hy2"),type:"hysteria2",server:$ip,port:$hp,password:$pw,sni:"singbox.local","skip-cert-verify":true},{name:($name+"-TUIC"),type:"tuic",server:$ip,port:$tp,uuid:$uuid,password:$pw,sni:"singbox.local",alpn:["h3"],"skip-cert-verify":true,"congestion-controller":"cubic"}],"proxy-groups":[{name:"PROXY",type:"select",proxies:["AUTO",($name+"-Reality"),($name+"-Hy2"),($name+"-TUIC"),"DIRECT"]},{name:"AUTO",type:"url-test",url:"https://www.gstatic.com/generate_204",interval:300,proxies:[($name+"-Reality"),($name+"-Hy2"),($name+"-TUIC")]}],rules:["MATCH,PROXY"]}' > "$file"
-  chmod 600 "$file"
-}
-write_sub_service(){
-  cat > /etc/systemd/system/$SERVICE <<EOF
+EOF
+ jq empty "$tmp" && sing-box check -c "$tmp" || { rm -f "$tmp"; err '配置校验失败，未覆盖原配置'; return 1; }; mv -f "$tmp" "$CONF"; chmod 600 "$CONF"; }
+sub_unit(){ cat > "$UNIT" <<EOF
 [Unit]
-Description=Sing-box local subscription server
-After=network-online.target
-Wants=network-online.target
+Description=Sing-box Mihomo Subscription HTTP Server
+After=network.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=$SUB
-ExecStart=/usr/bin/python3 -m http.server $SUB_PORT --bind 0.0.0.0 --directory $SUB
+WorkingDirectory=${WEB}
+ExecStart=/usr/bin/python3 -m http.server ${SUB_PORT} --bind 0.0.0.0 --directory ${WEB}
 Restart=on-failure
 RestartSec=3
-NoNewPrivileges=true
-ProtectSystem=strict
-ReadOnlyPaths=$SUB
-PrivateTmp=true
 [Install]
 WantedBy=multi-user.target
 EOF
-  systemctl daemon-reload
-}
-start_all(){
-  systemctl enable sing-box.service "$SERVICE" >/dev/null
-  systemctl restart sing-box.service
-  systemctl restart "$SERVICE"
-  if ! systemctl is-active --quiet sing-box.service; then journalctl -u sing-box.service -n 30 --no-pager; fail 'Sing-box 启动失败'; fi
-  if ! systemctl is-active --quiet "$SERVICE"; then journalctl -u "$SERVICE" -n 30 --no-pager; fail '订阅服务启动失败'; fi
-  msg '核心和订阅服务均运行中'
-}
-install_core(){
-  msg '从 Sing-box 官方安装脚本安装核心（请确认你信任 sing-box.app）'
-  local tmp; tmp=$(mktemp)
-  curl -fL --retry 2 --max-time 60 https://sing-box.app/install.sh -o "$tmp"
-  bash "$tmp"; rm -f "$tmp"
-  command -v sing-box >/dev/null || fail '核心安装后找不到 sing-box'
-  sing-box version | head -n 2
-}
-install_all(){
-  if [[ -f $CFG ]]; then
-    read -rp '检测到现有配置。将备份并覆盖节点配置，继续？[输入 YES]: ' answer
-    [[ $answer == YES ]] || return
-  fi
-  install_deps; backup; install_core; server_ip
-  UUID=$(sing-box generate uuid)
-  PASSWORD=$(openssl rand -hex 16)
-  SUB_TOKEN=$(openssl rand -hex 16)
-  SHORT_ID=$(openssl rand -hex 8)
-  NODE_NAME=Singbox-Node
-  DEST_DOMAIN=www.apple.com
-  local keys
-  keys=$(sing-box generate reality-keypair)
-  PRIVATE_KEY=$(printf '%s\n' "$keys" | sed -nE 's/^[[:space:]]*PrivateKey:[[:space:]]*//p; s/^[[:space:]]*PrivateKey[[:space:]]*:[[:space:]]*//p; s/^[[:space:]]*PrivateKey[[:space:]]+//p' | head -n1)
-  PUBLIC_KEY=$(printf '%s\n' "$keys" | sed -nE 's/^[[:space:]]*PublicKey:[[:space:]]*//p; s/^[[:space:]]*PublicKey[[:space:]]*:[[:space:]]*//p; s/^[[:space:]]*PublicKey[[:space:]]+//p' | head -n1)
-  [[ -n $PRIVATE_KEY && -n $PUBLIC_KEY ]] || fail "Reality 密钥解析失败，实际输出：$keys"
-  REALITY_PORT=41001; HY2_PORT=46001; TUIC_PORT=51001; SUB_PORT=21001
-  msg '独立 VPS 可以使用默认端口；NAT VPS 请输入服务商分配的内部监听端口。'
-  ask_port REALITY_PORT "$REALITY_PORT"; ask_port HY2_PORT "$HY2_PORT"; ask_port TUIC_PORT "$TUIC_PORT"; ask_port SUB_PORT "$SUB_PORT"; check_ports
-  mkdir -p "$CERT"; chmod 700 "$CERT"
-  if [[ ! -f $CERT/cert.pem || ! -f $CERT/private.key ]]; then
-    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout "$CERT/private.key" -out "$CERT/cert.pem" -days 365 -subj '/CN=singbox.local' -addext 'subjectAltName=DNS:singbox.local' >/dev/null 2>&1
-  fi
-  write_config; write_state; write_sub; write_sub_service; start_all
-  msg '安装完成。请在云平台防火墙放行 Reality TCP、Hy2/TUIC UDP、订阅 TCP 端口。'
-  show_info
-}
-show_info(){
-  load || return
-  printf '\n服务器：%s\nReality TCP: %s\nHy2 UDP: %s\nTUIC UDP: %s\n订阅 TCP: %s\n' "$SERVER_IP" "$REALITY_PORT" "$HY2_PORT" "$TUIC_PORT" "$SUB_PORT"
-  printf 'Clash 订阅（HTTP 明文，含敏感凭证）：http://%s:%s/%s.yaml\n' "$SERVER_IP" "$SUB_PORT" "$SUB_TOKEN"
-  printf 'Reality：vless://%s@%s:%s?type=tcp&security=reality&pbk=%s&fp=chrome&sni=%s&sid=%s&flow=xtls-rprx-vision#%s-Reality\n' "$UUID" "$SERVER_IP" "$REALITY_PORT" "$PUBLIC_KEY" "$DEST_DOMAIN" "$SHORT_ID" "$NODE_NAME"
-  printf 'Hy2：hysteria2://%s@%s:%s/?sni=singbox.local&insecure=1#%s-Hy2\n' "$PASSWORD" "$SERVER_IP" "$HY2_PORT" "$NODE_NAME"
-  printf 'TUIC：tuic://%s:%s@%s:%s/?sni=singbox.local&alpn=h3&insecure=1&congestion_control=cubic#%s-TUIC\n' "$UUID" "$PASSWORD" "$SERVER_IP" "$TUIC_PORT" "$NODE_NAME"
-  err '以上链接包含敏感凭证，请勿公开分享。订阅 HTTP 明文仅建议临时使用，正式部署请改为 HTTPS。'
-}
-change_ports(){
-  load || return
-  ask_port REALITY_PORT "$REALITY_PORT"; ask_port HY2_PORT "$HY2_PORT"; ask_port TUIC_PORT "$TUIC_PORT"; ask_port SUB_PORT "$SUB_PORT"; check_ports
-  backup; write_config; write_state; write_sub; write_sub_service; start_all
-}
-change_name(){ load || return; local n; read -rp '新节点名称（只允许字母、数字、_、-）: ' n; [[ $n =~ ^[a-zA-Z0-9_-]+$ ]] || { err '名称不合法'; return; }; NODE_NAME=$n; write_state; write_sub; msg '已更新，请刷新订阅'; }
-change_token(){ load || return; local old=$SUB_TOKEN; SUB_TOKEN=$(openssl rand -hex 16); write_state; write_sub; rm -f "$SUB/$old.yaml"; msg '已轮换订阅 token'; show_info; }
-status(){ systemctl --no-pager --full status sing-box.service "$SERVICE" || true; }
-logs(){ journalctl -u sing-box.service -u "$SERVICE" -n 80 --no-pager; }
-uninstall_all(){
-  read -rp '将停止服务并删除本脚本配置与订阅，输入 DELETE 确认：' ans
-  [[ $ans == DELETE ]] || return
-  backup
-  systemctl disable --now sing-box.service "$SERVICE" 2>/dev/null || true
-  rm -f "/etc/systemd/system/$SERVICE"
-  rm -rf "$BASE" "$SUB"
-  systemctl daemon-reload
-  msg '已清理本脚本配置和订阅，保留 sing-box 核心二进制及安装包。'
-}
-while :; do
-  printf '\n==== Sing-box 三合一管理 V2 ====\n1 安装/重装（备份旧配置）\n2 查看节点和订阅\n3 修改端口\n4 修改节点名称\n5 更换订阅令牌\n6 重启服务\n7 查看状态\n8 查看日志\n9 停止服务\n10 卸载配置\n0 退出\n'
-  read -rp '请选择: ' choice || exit 0
-  case "$choice" in
-    1) install_all;; 2) show_info;; 3) change_ports;; 4) change_name;; 5) change_token;;
-    6) systemctl restart sing-box.service "$SERVICE" && msg '重启命令执行完成' && status;;
-    7) status;; 8) logs;; 9) systemctl stop sing-box.service "$SERVICE";; 10) uninstall_all;; 0) exit 0;; *) err '无效选项';;
-  esac
-done
+ systemctl daemon-reload && systemctl enable --now singbox-sub >/dev/null 2>&1 && systemctl restart singbox-sub; }
+start_services(){ systemctl daemon-reload; systemctl enable sing-box >/dev/null 2>&1 || true; if ! systemctl restart sing-box; then err 'Sing-box 启动失败'; journalctl -u sing-box -n 15 --no-pager; return 1; fi; if ! sub_unit; then err '订阅服务启动失败'; journalctl -u singbox-sub -n 15 --no-pager; return 1; fi; systemctl is-active --quiet sing-box && systemctl is-active --quiet singbox-sub || { err '服务未全部运行'; return 1; }; say "${GREEN}两个服务均已启动${RESET}"; }
+firewall_ports(){ if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q 'Status: active'; then ufw allow "$REALITY_PORT/tcp"; ufw allow "$HY2_PORT/udp"; ufw allow "$TUIC_PORT/udp"; ufw allow "$SUB_PORT/tcp"; fi; }
+keypair(){ local output; output=$(sing-box generate reality-keypair) || return 1; PRIVATE_KEY=$(printf '%s\n' "$output" | sed -nE 's/^[[:space:]]*[Pp]rivate[Kk]ey[[:space:]_]*:[[:space:]]*([^[:space:]]+).*/\1/p' | head -n1); PUBLIC_KEY=$(printf '%s\n' "$output" | sed -nE 's/^[[:space:]]*[Pp]ublic[Kk]ey[[:space:]_]*:[[:space:]]*([^[:space:]]+).*/\1/p' | head -n1); [[ -n $PRIVATE_KEY && -n $PUBLIC_KEY ]] || { err 'Reality 密钥解析失败，核心输出为:'; printf '%s\n' "$output"; return 1; }; }
+install_all(){ need_root; if [[ -e $CONF || -e $INFO ]]; then say "${YELLOW}检测到旧配置。重装将更换 UUID、密码和订阅地址。${RESET}"; read -r -p '确认备份并重装? (输入 YES): ' confirm; [[ $confirm == YES ]] || return; backup; fi; install_deps || return 1; install_core || { err 'Sing-box 核心安装失败'; return 1; }; make_cert || return 1; server_ip || return 1; UUID=$(sing-box generate uuid) || return 1; PASSWORD=$(openssl rand -hex 16); SUB_TOKEN=$(openssl rand -hex 16); NODE_NAME=Singbox-Node; DEST_DOMAIN=www.apple.com; keypair || return 1; SHORT_ID=$(openssl rand -hex 8); read -r -p '使用自定义端口? NAT VPS 推荐 y (y/N): ' choice; if [[ $choice =~ ^[yY]$ ]]; then ask_port REALITY_PORT 'Reality TCP 内部监听端口' 10001; ask_port HY2_PORT 'Hy2 UDP 内部监听端口' 10002; ask_port TUIC_PORT 'TUIC UDP 内部监听端口' 10003; ask_port SUB_PORT '订阅 TCP 内部监听端口' 10004; else REALITY_PORT=$((40000+RANDOM%5000)); HY2_PORT=$((45000+RANDOM%5000)); TUIC_PORT=$((50000+RANDOM%5000)); SUB_PORT=$((20000+RANDOM%5000)); fi; ports_unique "$REALITY_PORT" "$HY2_PORT" "$TUIC_PORT" "$SUB_PORT" || { err '四个内部端口不能重复'; return 1; }; REALITY_PUBLIC_PORT=$REALITY_PORT; HY2_PUBLIC_PORT=$HY2_PORT; TUIC_PUBLIC_PORT=$TUIC_PORT; SUB_PUBLIC_PORT=$SUB_PORT; read -r -p '公网端口与内部端口不同（NAT 映射）? (y/N): ' nat; if [[ $nat =~ ^[yY]$ ]]; then ask_port REALITY_PUBLIC_PORT 'Reality 公网 TCP 端口' "$REALITY_PORT"; ask_port HY2_PUBLIC_PORT 'Hy2 公网 UDP 端口' "$HY2_PORT"; ask_port TUIC_PUBLIC_PORT 'TUIC 公网 UDP 端口' "$TUIC_PORT"; ask_port SUB_PUBLIC_PORT '订阅公网 TCP 端口' "$SUB_PORT"; fi; write_config || return 1; write_info; make_yaml || return 1; start_services || return 1; firewall_ports; say "${GREEN}安装完成${RESET}"; view; }
+view(){ load || return 1; server_ip || return 1; say "${CYAN}======== 节点详情 ========${RESET}"; say "IP: $SERVER_IP | 节点名: $NODE_NAME"; say "Reality TCP: 内部 $REALITY_PORT / 公网 ${REALITY_PUBLIC_PORT:-$REALITY_PORT}"; say "Hy2 UDP: 内部 $HY2_PORT / 公网 ${HY2_PUBLIC_PORT:-$HY2_PORT}"; say "TUIC UDP: 内部 $TUIC_PORT / 公网 ${TUIC_PUBLIC_PORT:-$TUIC_PORT}"; say "订阅 TCP: 内部 $SUB_PORT / 公网 ${SUB_PUBLIC_PORT:-$SUB_PORT}"; say "${YELLOW}订阅链接包含访问凭证，请勿公开分享。HTTP 明文传输，建议另行配置 HTTPS。${RESET}"; say "http://${SERVER_IP}:${SUB_PUBLIC_PORT:-$SUB_PORT}/${SUB_TOKEN}.yaml"; say "${CYAN}Reality:${RESET}"; say "vless://${UUID}@${SERVER_IP}:${REALITY_PUBLIC_PORT:-$REALITY_PORT}?type=tcp&security=reality&pbk=${PUBLIC_KEY}&fp=chrome&sni=${DEST_DOMAIN}&sid=${SHORT_ID}&spx=%2F&flow=xtls-rprx-vision#${NODE_NAME}-Reality"; say "${CYAN}Hysteria2:${RESET}"; say "hysteria2://${PASSWORD}@${SERVER_IP}:${HY2_PUBLIC_PORT:-$HY2_PORT}/?sni=bing.com&insecure=1#${NODE_NAME}-Hy2"; say "${CYAN}TUIC:${RESET}"; say "tuic://${UUID}:${PASSWORD}@${SERVER_IP}:${TUIC_PUBLIC_PORT:-$TUIC_PORT}/?sni=bing.com&alpn=h3&insecure=1#${NODE_NAME}-TUIC"; }
+modify_ports(){ load || return 1; server_ip || return 1; local old_sub=$SUB_PORT; ask_port REALITY_PORT 'Reality 内部 TCP 端口' "$REALITY_PORT"; ask_port HY2_PORT 'Hy2 内部 UDP 端口' "$HY2_PORT"; ask_port TUIC_PORT 'TUIC 内部 UDP 端口' "$TUIC_PORT"; ask_port SUB_PORT '订阅内部 TCP 端口' "$SUB_PORT"; ports_unique "$REALITY_PORT" "$HY2_PORT" "$TUIC_PORT" "$SUB_PORT" || { err '内部端口重复'; return 1; }; ask_port REALITY_PUBLIC_PORT 'Reality 公网 TCP 端口' "${REALITY_PUBLIC_PORT:-$REALITY_PORT}"; ask_port HY2_PUBLIC_PORT 'Hy2 公网 UDP 端口' "${HY2_PUBLIC_PORT:-$HY2_PORT}"; ask_port TUIC_PUBLIC_PORT 'TUIC 公网 UDP 端口' "${TUIC_PUBLIC_PORT:-$TUIC_PORT}"; ask_port SUB_PUBLIC_PORT '订阅公网 TCP 端口' "${SUB_PUBLIC_PORT:-$SUB_PORT}"; backup; local tmp="$CONF.tmp"; jq --argjson r "$REALITY_PORT" --argjson h "$HY2_PORT" --argjson t "$TUIC_PORT" '.inbounds[0].listen_port=$r | .inbounds[1].listen_port=$h | .inbounds[2].listen_port=$t' "$CONF" > "$tmp" && sing-box check -c "$tmp" || { rm -f "$tmp"; err '新配置校验失败'; return 1; }; mv -f "$tmp" "$CONF"; write_info; make_yaml; start_services && firewall_ports && view; }
+change_name(){ load || return 1; server_ip || return 1; local name; read -r -p '新节点名称（不建议使用引号或特殊符号）: ' name; [[ $name =~ ^[a-zA-Z0-9_一-龥.-]+$ ]] || { err '名称仅允许中英文、数字、下划线、点和横线'; return 1; }; NODE_NAME=$name; write_info; make_yaml; say '节点名称已更新，客户端请刷新订阅'; }
+change_token(){ load || return 1; server_ip || return 1; local token old=$SUB_TOKEN; read -r -p '新订阅文件名（英文数字下划线横线，不含 .yaml）: ' token; [[ $token =~ ^[a-zA-Z0-9_-]+$ ]] || { err '订阅名不合法'; return 1; }; SUB_TOKEN=$token; write_info; make_yaml; [[ $old == "$token" ]] || rm -f "$WEB/$old.yaml"; view; }
+restart_all(){ systemctl restart sing-box singbox-sub && systemctl is-active --quiet sing-box && systemctl is-active --quiet singbox-sub && say '服务重启成功' || { err '重启失败'; journalctl -u sing-box -n 15 --no-pager; }; }
+stop_all(){ systemctl stop sing-box singbox-sub && say '两个服务已停止'; }
+status_logs(){ systemctl --no-pager --full status sing-box singbox-sub || true; say '---- Sing-box 最近日志 ----'; journalctl -u sing-box -n 30 --no-pager; say '---- 订阅最近日志 ----'; journalctl -u singbox-sub -n 15 --no-pager; }
+uninstall_all(){ need_root; read -r -p '卸载会删除全部节点和订阅文件。输入 DELETE 确认: ' answer; [[ $answer == DELETE ]] || return; backup; systemctl disable --now sing-box singbox-sub >/dev/null 2>&1 || true; rm -rf "$DIR" "$WEB"; rm -f "$INFO" "$UNIT"; systemctl daemon-reload; say '已清理本脚本配置及订阅服务；保留 Sing-box 核心程序和脚本，避免误删其他软件。'; }
+setup_shortcuts(){ need_root; if [[ -f $0 && $(readlink -f -- "$0") != "$SELF" ]]; then cp -f -- "$0" "$SELF" || return 1; fi; chmod +x "$SELF"; ln -sfn "$SELF" /usr/local/bin/sb; ln -sfn "$SELF" /usr/local/bin/singbox; }
+main(){ need_root; setup_shortcuts || { err '创建快捷命令失败'; exit 1; }; while :; do say "${CYAN}==============================================${RESET}"; say "${GREEN} Sing-box 三合一管理 V2 | Reality + Hy2 + TUIC${RESET}"; say ' 1. 安装 / 重装（支持 NAT）'; say ' 2. 查看节点及 Clash 订阅'; say ' 3. 修改端口'; say ' 4. 修改节点名称'; say ' 5. 修改订阅文件名'; say ' 6. 重启服务'; say ' 7. 停止服务'; say ' 8. 卸载配置'; say ' 9. 查看状态和日志'; say ' 0. 退出'; if systemctl is-active --quiet sing-box; then say "核心: ${GREEN}运行中${RESET}"; else say "核心: ${RED}未运行${RESET}"; fi; if systemctl is-active --quiet singbox-sub; then say "订阅: ${GREEN}运行中${RESET}"; else say "订阅: ${RED}未运行${RESET}"; fi; read -r -p '请选择 [0-9]: ' choice || exit 0; case $choice in 1) install_all;; 2) view;; 3) modify_ports;; 4) change_name;; 5) change_token;; 6) restart_all;; 7) stop_all;; 8) uninstall_all;; 9) status_logs;; 0) exit 0;; *) err '无效选项';; esac; done; }
+main "$@"
