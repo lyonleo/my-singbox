@@ -9,7 +9,7 @@
 使用 root 用户执行：
 
 ```bash
-apt-get update && apt-get install -y curl ca-certificates && curl -fsSL https://raw.githubusercontent.com/lyonleo/my-singbox/main/sb.sh -o /root/sb.sh && bash -n /root/sb.sh && bash /root/sb.sh
+apt-get update && apt-get install -y curl ca-certificates && curl -fL --retry 3 --connect-timeout 15 --max-time 60 -H 'Accept: application/vnd.github.raw+json' "https://api.github.com/repos/lyonleo/my-singbox/contents/sb.sh?ref=main&t=$(date +%s)" -o /root/sb-download.sh && bash -n /root/sb-download.sh && mv -f /root/sb-download.sh /root/sb.sh && bash /root/sb.sh
 ```
 
 进入菜单后：
