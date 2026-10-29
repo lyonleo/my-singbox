@@ -1,14 +1,77 @@
-# Sing-box 三合一聚合管理脚本
+# Sing-box 四合一聚合管理脚本
 
-基于 Sing-box 内核的一键部署脚本，同时支持 **VLESS-Reality、Hysteria 2、TUIC V5**，并内置轻量 Clash（Mihomo）在线订阅服务。
+基于 Sing-box 内核的一键部署脚本，支持 **VLESS-Reality、Hysteria 2、TUIC V5、AnyTLS**，内置 Clash / Mihomo 在线订阅服务及 BBR 优化功能。
 
-支持 Ubuntu / Debian，支持自定义端口、NAT VPS、节点名称修改、订阅管理及服务日志查看。
+支持 Ubuntu / Debian、自定义端口、NAT VPS、节点及订阅管理。
 
-## 通用双栈 / IPv4 优先安装命令
+## 一键安装
+
+使用 root 用户执行：
 
 ```bash
 apt-get update && apt-get install -y curl ca-certificates && curl -fsSL https://raw.githubusercontent.com/lyonleo/my-singbox/main/sb.sh -o /root/sb.sh && bash -n /root/sb.sh && bash /root/sb.sh
 ```
+
+进入菜单后：
+
+- **选 1**：全新安装 / 重装四种协议。
+- **选 11**：给本脚本旧版三合一安装追加 AnyTLS，保留原节点凭证和订阅地址。
+
+重装会更换 UUID、密码和订阅地址，请按提示确认。
+
+## 快捷管理
+
+运行脚本后，可通过以下命令进入管理菜单：
+
+```bash
+sb
+```
+
+## 支持功能
+
+- VLESS + Reality + Vision（TCP）
+- Hysteria 2（UDP）
+- TUIC V5（UDP）
+- AnyTLS（TCP）
+- Clash / Mihomo 在线订阅及节点链接输出
+- 自定义监听端口及 NAT 公网映射端口
+- 给现有三合一安装追加 AnyTLS
+- 修改节点名称、订阅文件名称
+- 服务重启、停止、状态及日志查看
+- BBR + fq 一键开启与状态查看
+- 配置备份及卸载清理
+
+## 使用要求
+
+- 系统：Ubuntu / Debian，使用 root 运行。
+- AnyTLS 需要 sing-box 1.12.0 或更新版本；已有核心过旧时需先升级。
+- 客户端需要支持对应协议，AnyTLS 建议使用新版 Mihomo 客户端。
+- 当前脚本需要公网 IPv4，不支持纯 IPv6 VPS。
+
+## 端口放行
+
+请在系统防火墙、云安全组及 NAT 映射中放行实际设置的端口：
+
+| 服务 | 传输协议 |
+| --- | --- |
+| VLESS-Reality | TCP |
+| Hysteria 2 | UDP |
+| TUIC V5 | UDP |
+| AnyTLS | TCP |
+| 在线订阅 | TCP |
+
+甲骨文 VPS 还需要在安全列表或网络安全组中添加对应入站规则。
+
+## 注意事项
+
+1. 安装或更新前请备份已有配置。
+2. NAT VPS 请正确填写内部监听端口与公网映射端口。
+3. 添加 AnyTLS 后，客户端需要刷新订阅。
+4. 当前 Hy2、TUIC、AnyTLS 使用自签名证书，生成的客户端配置已开启跳过证书验证。
+5. 完整订阅链接及节点链接包含访问凭证，请勿公开。
+6. 在线订阅默认使用 HTTP，建议另行配置 HTTPS。
+7. BBR 是否可用取决于当前系统内核。
+8. 执行一键安装前，请确认新版脚本已上传至仓库 main 分支的 `sb.sh`。
 
 ## 纯 IPv6 专用安装命令
 
